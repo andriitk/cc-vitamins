@@ -1,0 +1,354 @@
+#!/bin/sh
+# cc-vitamins — a polished, portable Claude Code status line.
+#
+#   Line 1 (where am I):  vim mode · dir · git · worktree · agent · session ·
+#                         model · effort · fast mode · duration · +/- lines
+#   Line 2 (what it costs): context bar · prompt cache · active sessions ·
+#                         session $ · today $ · spend limit · rate limits
+#
+# Input: the official statusLine JSON on stdin.
+#   https://code.claude.com/docs/en/statusline
+#
+# Design: stdin is parsed with a SINGLE jq call that emits shell-quoted (@sh)
+# assignments which are eval'd, instead of invoking jq once per field.
+#
+# This project is an unofficial community tool, not affiliated with Anthropic.
+
+# Numbers in the JSON use a "." decimal point. Under locales such as de_DE or
+# uk_UA, printf '%.0f' rejects "42.3", so pin numeric formatting to C.
+LC_ALL=C
+export LC_ALL
+
+# ── Resolve install directory and source modules ─────────────────────────────
+SCRIPT_PATH=$0
+# Follow a symlink if the entry point was linked onto PATH.
+while [ -L "$SCRIPT_PATH" ]; do
+  _link=$(readlink "$SCRIPT_PATH")
+  case "$_link" in
+    /*) SCRIPT_PATH=$_link ;;
+    *)  SCRIPT_PATH=$(dirname "$SCRIPT_PATH")/$_link ;;
+  esac
+done
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+ROOT_DIR=${SCRIPT_DIR%/bin}
+LIB_DIR="$ROOT_DIR/lib"
+
+# ── Dependency check: jq is required ─────────────────────────────────────────
+if ! command -v jq >/dev/null 2>&1; then
+  printf 'cc-vitamins: jq not found — install jq (https://jqlang.github.io/jq/)\n'
+  exit 0
+fi
+
+# shellcheck source=lib/format.sh
+. "$LIB_DIR/format.sh"
+# shellcheck source=lib/cost.sh
+. "$LIB_DIR/cost.sh"
+# shellcheck source=lib/sessions.sh
+. "$LIB_DIR/sessions.sh"
+
+# ── Read stdin once ──────────────────────────────────────────────────────────
+input=$(cat)
+
+# ── Parse everything with ONE jq call into shell-quoted assignments ──────────
+# `q` renders null as an empty string and everything else via @sh, so eval is
+# safe for arbitrary field values. cache_warm keeps false-vs-missing semantics:
+# an empty value means prompt_cache was absent, "false" means present but cold.
+_assignments=$(printf '%s' "$input" | jq -r '
+  def q: (if . == null then "" else (. | tostring) end) | @sh;
+  "cwd="                 + ((.cwd // .workspace.current_dir) | q),
+  "session_id="          + (.session_id | q),
+  "transcript_path="     + (.transcript_path | q),
+  "session_name="        + (.session_name | q),
+  "worktree_name="       + (.worktree.name | q),
+  "worktree_branch="     + (.worktree.branch | q),
+  "agent_name="          + (.agent.name | q),
+  "vim_mode="            + (.vim.mode | q),
+  "model="               + (.model.display_name | q),
+  "effort="              + (.effort.level | q),
+  "fast_mode="           + (.fast_mode | q),
+  "lines_added="         + (.cost.total_lines_added | q),
+  "lines_removed="       + (.cost.total_lines_removed | q),
+  "cache_warm="          + ((if .prompt_cache then (.prompt_cache.warm | tostring) else "" end) | @sh),
+  "cache_ratio="         + (.prompt_cache.hit_ratio | q),
+  "cache_expires="       + (.prompt_cache.expires_at | q),
+  "session_cost="        + (.cost.total_cost_usd | q),
+  "session_duration_ms=" + (.cost.total_duration_ms | q),
+  "ctx_pct="             + (.context_window.used_percentage | q),
+  "ctx_tokens="          + (.context_window.total_input_tokens | q),
+  "ctx_size="            + (.context_window.context_window_size | q),
+  "five_hr="             + (.rate_limits.five_hour.used_percentage | q),
+  "five_hr_reset="       + (.rate_limits.five_hour.resets_at | q),
+  "seven_day="           + (.rate_limits.seven_day.used_percentage | q),
+  "seven_day_reset="     + (.rate_limits.seven_day.resets_at | q),
+  "spend_used="          + (.rate_limits.spend_limit.used_usd | q),
+  "spend_limit="         + (.rate_limits.spend_limit.limit_usd | q),
+  "spend_pct="           + (.rate_limits.spend_limit.used_percentage | q),
+  "spend_period="        + (.rate_limits.spend_limit.period | q)
+' 2>/dev/null)
+
+if [ -z "$_assignments" ]; then
+  # Malformed JSON on stdin: say so briefly rather than crashing.
+  printf 'cc-vitamins: could not parse status input\n'
+  exit 0
+fi
+eval "$_assignments"
+
+# ── Configuration: defaults, config file, env overrides ──────────────────────
+# Env vars (already exported) win, then the config file fills gaps, then these
+# hard defaults. The config file uses `: "${VAR:=value}"` so env always wins.
+CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+CONFIG_FILE="$CONFIG_HOME/cc-vitamins/config"
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+: "${CC_VITAMINS_BAR_WIDTH:=12}"
+: "${CC_VITAMINS_CCUSAGE:=1}"
+: "${CC_VITAMINS_CCUSAGE_TTL:=30}"
+: "${CC_VITAMINS_BIGWIN_THRESHOLD:=200000}"
+: "${CC_VITAMINS_CTX_PCT_YELLOW:=50}"
+: "${CC_VITAMINS_CTX_PCT_ORANGE:=70}"
+: "${CC_VITAMINS_CTX_PCT_RED:=85}"
+: "${CC_VITAMINS_CTX_TOK_YELLOW:=100000}"
+: "${CC_VITAMINS_CTX_TOK_ORANGE:=250000}"
+: "${CC_VITAMINS_CTX_TOK_RED:=500000}"
+: "${CC_VITAMINS_TODAY_YELLOW:=10}"
+: "${CC_VITAMINS_TODAY_RED:=25}"
+: "${CC_VITAMINS_PCT_YELLOW:=50}"
+: "${CC_VITAMINS_PCT_RED:=80}"
+: "${CC_VITAMINS_CACHE_WARN_SECS:=600}"
+: "${CC_VITAMINS_RESET_COUNTDOWN:=1}"
+: "${CC_VITAMINS_LINE1:=vim dir git worktree agent session model effort fast duration lines}"
+: "${CC_VITAMINS_LINE2:=context cache sessions session_cost today spend ratelimits}"
+
+export CC_VITAMINS_BIGWIN_THRESHOLD CC_VITAMINS_CTX_PCT_YELLOW CC_VITAMINS_CTX_PCT_ORANGE \
+  CC_VITAMINS_CTX_PCT_RED CC_VITAMINS_CTX_TOK_YELLOW CC_VITAMINS_CTX_TOK_ORANGE \
+  CC_VITAMINS_CTX_TOK_RED CC_VITAMINS_TODAY_YELLOW CC_VITAMINS_TODAY_RED \
+  CC_VITAMINS_PCT_YELLOW CC_VITAMINS_PCT_RED
+
+init_colors
+
+# Pro/Max subscribers get 5h/7d usage windows. For them every $ figure is an
+# API-list-price estimate, not a bill, so cost segments are prefixed with "≈".
+COST_PREFIX='$'
+[ -n "$five_hr$seven_day" ] && COST_PREFIX='≈$'
+
+# usd <amount>  ->  $1.23 (or ≈$1.23 for subscribers)
+usd() { printf '%s%.2f' "$COST_PREFIX" "$1"; }
+
+# time_left <epoch>  ->  45s / 23m / 2h10m / 3d4h, or empty if past or invalid
+time_left() {
+  case "$1" in '' | *[!0-9]* ) return 0 ;; esac
+  _s=$(( $1 - $(date +%s) ))
+  [ "$_s" -gt 0 ] || return 0
+  if [ "$_s" -ge 86400 ]; then printf '%dd%dh' $(( _s / 86400 )) $(( (_s % 86400) / 3600 ))
+  elif [ "$_s" -ge 3600 ]; then printf '%dh%02dm' $(( _s / 3600 )) $(( (_s % 3600) / 60 ))
+  elif [ "$_s" -ge 60 ]; then printf '%dm' $(( _s / 60 ))
+  else printf '%ds' "$_s"; fi
+}
+
+# ── Cache dir ────────────────────────────────────────────────────────────────
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/cc-vitamins"
+SESS_DIR="$CACHE_DIR/sessions"
+mkdir -p "$CACHE_DIR" 2>/dev/null || :
+# Prune stale per-session state files.
+find "$CACHE_DIR" \( -name 'ctx-*' -o -name 'day-*' \) -mtime +14 -delete 2>/dev/null || :
+
+# ── Output accumulators ──────────────────────────────────────────────────────
+line1=""
+line2=""
+
+# add2 <text> — append a line-2 segment, inserting the separator when needed.
+add2() {
+  [ -n "$1" ] || return 0
+  [ -n "$line2" ] && line2="${line2}${SEP}"
+  line2="${line2}$1"
+}
+
+# ── Line 1 segments ──────────────────────────────────────────────────────────
+l1_vim() {
+  [ -n "$vim_mode" ] || return 0
+  case "$vim_mode" in
+    NORMAL) line1="${line1}${BOLD}${YELLOW}[N]${RESET} " ;;
+    INSERT) line1="${line1}${BOLD}${GREEN}[I]${RESET} " ;;
+    *)      line1="${line1}${BOLD}${WHITE}[${vim_mode}]${RESET} " ;;
+  esac
+}
+
+l1_dir() {
+  line1="${line1}${CYAN}$(basename "${cwd:-?}")${RESET}"
+}
+
+l1_git() {
+  [ -n "$cwd" ] || return 0
+  _branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null) || return 0
+  line1="${line1} ${BLUE}git:(${_branch})${RESET}"
+  if [ -n "$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" status --porcelain 2>/dev/null)" ]; then
+    line1="${line1}${RED}*${RESET}"
+  fi
+}
+
+l1_worktree() {
+  [ -n "$worktree_name" ] || return 0
+  _label="$worktree_name"
+  [ -n "$worktree_branch" ] && _label="${worktree_name}:${worktree_branch}"
+  line1="${line1} ${MAGENTA}wt:(${_label})${RESET}"
+}
+
+l1_agent() {
+  [ -n "$agent_name" ] && line1="${line1} ${MAGENTA}agent:(${agent_name})${RESET}"
+}
+
+l1_session() {
+  [ -n "$session_name" ] && line1="${line1} ${DIM}[${session_name}]${RESET}"
+}
+
+l1_model() {
+  [ -n "$model" ] && line1="${line1}${SEP}${BOLD}${WHITE}${model}${RESET}"
+}
+
+l1_effort() {
+  [ -n "$effort" ] && line1="${line1} ${DIM}${effort}${RESET}"
+}
+
+l1_fast() {
+  [ "$fast_mode" = "true" ] && line1="${line1} ${YELLOW}⚡fast${RESET}"
+}
+
+l1_duration() {
+  [ -n "$session_duration_ms" ] && \
+    line1="${line1}${SEP}${DIM}⏱ $(format_duration "$session_duration_ms")${RESET}"
+}
+
+l1_lines() {
+  { [ "${lines_added:-0}" -gt 0 ] 2>/dev/null || [ "${lines_removed:-0}" -gt 0 ] 2>/dev/null; } || return 0
+  line1="${line1}${SEP}${GREEN}+${lines_added:-0}${RESET} ${RED}-${lines_removed:-0}${RESET}"
+}
+
+# ── Line 2 segments ──────────────────────────────────────────────────────────
+l2_context() {
+  [ -n "$ctx_pct" ] || return 0
+  _pct_int=$(printf '%.0f' "$ctx_pct")
+  _color=$(ctx_color "${ctx_tokens:-0}" "${ctx_size:-200000}" "$_pct_int")
+  _seg="${DIM}ctx${RESET} ${_color}$(make_bar "$_pct_int" "$CC_VITAMINS_BAR_WIDTH") ${_pct_int}%${RESET}"
+
+  if [ -n "$ctx_tokens" ] && [ -n "$ctx_size" ] && [ "$ctx_tokens" -gt 0 ] 2>/dev/null; then
+    _seg="${_seg} ${WHITE}$(human_tokens "$ctx_tokens")${RESET}${DIM}/$(human_tokens "$ctx_size")${RESET}"
+    _delta=$(ctx_delta "$CACHE_DIR" "$session_id" "$ctx_tokens")
+    if [ -n "$_delta" ] && [ "$_delta" -gt 0 ] 2>/dev/null; then
+      _seg="${_seg} ${DIM}▲+$(human_tokens "$_delta")${RESET}"
+    elif [ -n "$_delta" ] && [ "$_delta" -lt 0 ] 2>/dev/null; then
+      _seg="${_seg} ${DIM}▼-$(human_tokens $(( -_delta )))${RESET}"
+    fi
+  fi
+  add2 "$_seg"
+}
+
+l2_cache() {
+  [ -n "$cache_warm" ] || return 0
+  _hit=""
+  [ -n "$cache_ratio" ] && _hit=" $(awk -v r="$cache_ratio" 'BEGIN { printf "%.0f%%", r * 100 }')"
+  if [ "$cache_warm" = "true" ]; then
+    _left=""
+    case "$cache_expires" in
+      '' | *[!0-9]* ) : ;;
+      *)
+        _secs=$(( cache_expires - $(date +%s) ))
+        if [ "$_secs" -gt 0 ]; then
+          _lc="$DIM"
+          [ "$_secs" -lt "$CC_VITAMINS_CACHE_WARN_SECS" ] && _lc="$YELLOW"
+          _left=" ${_lc}$(( _secs / 60 ))m${RESET}"
+        fi
+        ;;
+    esac
+    add2 "${DIM}cache${RESET}${GREEN}${_hit} warm${RESET}${_left}"
+  else
+    add2 "${DIM}cache${RESET}${RED}${_hit} cold${RESET}"
+  fi
+}
+
+l2_sessions() {
+  write_heartbeat "$SESS_DIR" "$session_id"
+  _n=$(count_live_sessions "$SESS_DIR")
+  [ "$_n" -ge 1 ] 2>/dev/null || return 0
+  if [ "$_n" -gt 1 ]; then
+    add2 "${BOLD}${CYAN}${_n} sessions${RESET}"
+  else
+    add2 "${DIM}${_n} session${RESET}"
+  fi
+}
+
+l2_session_cost() {
+  [ -n "$session_cost" ] || return 0
+  _today=$(session_today_cost "$CACHE_DIR" "$session_id" "$session_cost" "$transcript_path")
+  _seg="${DIM}session${RESET} ${GREEN}$(usd "$_today")${RESET}"
+  # Show the all-time figure only when it is meaningfully larger (older session).
+  if awk -v a="$session_cost" -v t="$_today" 'BEGIN { exit !(a - t >= 0.01) }'; then
+    _seg="${_seg} ${DIM}(all-time $(usd "$session_cost"))${RESET}"
+  fi
+  add2 "$_seg"
+}
+
+l2_today() {
+  # 1 = use an installed ccusage; npx = also allow fetching it via npx.
+  # npx is opt-in: it runs code downloaded from npm in the background.
+  case "$CC_VITAMINS_CCUSAGE" in 1|npx) ;; *) return 0 ;; esac
+  if command -v ccusage >/dev/null 2>&1; then
+    _cmd="ccusage"
+  elif [ "$CC_VITAMINS_CCUSAGE" = "npx" ] && command -v npx >/dev/null 2>&1; then
+    _cmd="npx --prefer-offline -y ccusage@latest"
+  else
+    return 0
+  fi
+  _tc=$(ccusage_today "$CACHE_DIR" "$CC_VITAMINS_CCUSAGE_TTL" "$_cmd")
+  [ -n "$_tc" ] || return 0
+  add2 "${DIM}today${RESET} $(today_color "$_tc")$(usd "$_tc")${RESET}"
+}
+
+l2_spend() {
+  # Behind a gateway the percentage arrives with every response; the dollar
+  # figures come from a separate request and can be missing for a while.
+  [ -n "$spend_pct$spend_limit" ] || return 0
+  _c=""
+  [ -n "$spend_pct" ] && _c=$(pct_color "$(printf '%.0f' "$spend_pct")")
+  if [ -n "$spend_limit" ]; then
+    _seg="${DIM}spend${RESET} ${_c}$(printf '$%.2f' "${spend_used:-0}")${RESET}${DIM}/$(printf '$%.2f' "$spend_limit")${RESET}"
+  else
+    _seg="${DIM}spend${RESET} ${_c}$(printf '%.0f' "$spend_pct")%${RESET}"
+  fi
+  case "$spend_period" in
+    daily)   _seg="${_seg}${DIM}/day${RESET}" ;;
+    weekly)  _seg="${_seg}${DIM}/wk${RESET}" ;;
+    monthly) _seg="${_seg}${DIM}/mo${RESET}" ;;
+  esac
+  add2 "$_seg"
+}
+
+l2_ratelimits() {
+  for _w in 5h 7d; do
+    if [ "$_w" = 5h ]; then _val=$five_hr; _rst=$five_hr_reset
+    else _val=$seven_day; _rst=$seven_day_reset; fi
+    [ -n "$_val" ] || continue
+    _v=$(printf '%.0f' "$_val")
+    _seg="${DIM}${_w}${RESET} $(pct_color "$_v")${_v}%${RESET}"
+    if [ "$CC_VITAMINS_RESET_COUNTDOWN" = "1" ]; then
+      _left=$(time_left "$_rst")
+      [ -n "$_left" ] && _seg="${_seg} ${DIM}↻${_left}${RESET}"
+    fi
+    add2 "$_seg"
+  done
+}
+
+# ── Dispatch segments in configured order ────────────────────────────────────
+for _seg in $CC_VITAMINS_LINE1; do
+  if command -v "l1_$_seg" >/dev/null 2>&1; then "l1_$_seg"; fi
+done
+for _seg in $CC_VITAMINS_LINE2; do
+  if command -v "l2_$_seg" >/dev/null 2>&1; then "l2_$_seg"; fi
+done
+
+# ── Emit ─────────────────────────────────────────────────────────────────────
+# Claude Code sets COLUMNS to the terminal width; wrap between segments rather
+# than letting the terminal cut a segment in half.
+[ -n "$line1" ] && printf '%b\n' "$(fit_width "$line1" "${COLUMNS:-}")"
+[ -n "$line2" ] && printf '%b\n' "$(fit_width "$line2" "${COLUMNS:-}")"
+exit 0

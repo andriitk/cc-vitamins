@@ -1,0 +1,13 @@
+{
+  "cwd": "/nonexistent/myproject",
+  "session_id": "sess-vim",
+  "vim": { "mode": "NORMAL" },
+  "model": { "display_name": "Opus 4.6" },
+  "fast_mode": true,
+  "prompt_cache": { "warm": false, "hit_ratio": 0.8 },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 45 },
+    "seven_day": { "used_percentage": 12 },
+    "spend_limit": { "used_usd": 3.5, "limit_usd": 50, "used_percentage": 7, "period": "monthly" }
+  }
+}

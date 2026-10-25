@@ -1,0 +1,61 @@
+# cc-vitamins configuration — copy to:
+#   ${XDG_CONFIG_HOME:-~/.config}/cc-vitamins/config
+#
+# This file is sourced as POSIX sh. Every option uses the `: "${VAR:=value}"`
+# form so that an environment variable of the same name (exported before the
+# status line runs) always takes precedence over the value written here.
+#
+# You can also set any of these as `CC_VITAMINS_*` environment variables without
+# a config file at all. To disable colors entirely, set NO_COLOR=1 (standard).
+
+# ── Segments: which segments appear, and in what order ───────────────────────
+# Remove a word to hide that segment; reorder words to reorder segments.
+#
+# Line 1 segments: vim dir git worktree agent session model effort fast duration lines
+: "${CC_VITAMINS_LINE1:=vim dir git worktree agent session model effort fast duration lines}"
+#
+# Line 2 segments: context cache sessions session_cost today spend ratelimits
+: "${CC_VITAMINS_LINE2:=context cache sessions session_cost today spend ratelimits}"
+
+# ── Context bar ──────────────────────────────────────────────────────────────
+# Width of the context usage bar, in characters.
+: "${CC_VITAMINS_BAR_WIDTH:=12}"
+
+# Windows larger than this (tokens) are colored by absolute token count;
+# smaller windows are colored by percentage used.
+: "${CC_VITAMINS_BIGWIN_THRESHOLD:=200000}"
+
+# Percentage thresholds for small windows (green < yellow < orange < red).
+: "${CC_VITAMINS_CTX_PCT_YELLOW:=50}"
+: "${CC_VITAMINS_CTX_PCT_ORANGE:=70}"
+: "${CC_VITAMINS_CTX_PCT_RED:=85}"
+
+# Absolute token thresholds for big windows (green < yellow < orange < red).
+: "${CC_VITAMINS_CTX_TOK_YELLOW:=100000}"
+: "${CC_VITAMINS_CTX_TOK_ORANGE:=250000}"
+: "${CC_VITAMINS_CTX_TOK_RED:=500000}"
+
+# ── Cost coloring ────────────────────────────────────────────────────────────
+# Today's total dollars: yellow at/above the first value, red at/above the second.
+: "${CC_VITAMINS_TODAY_YELLOW:=10}"
+: "${CC_VITAMINS_TODAY_RED:=25}"
+
+# Generic percentage coloring (used by the rate-limit segment).
+: "${CC_VITAMINS_PCT_YELLOW:=50}"
+: "${CC_VITAMINS_PCT_RED:=80}"
+
+# ── Prompt cache ─────────────────────────────────────────────────────────────
+# Warn (yellow) when the warm cache expires in fewer than this many seconds.
+: "${CC_VITAMINS_CACHE_WARN_SECS:=600}"
+
+# ── Rate limits (Pro/Max) ────────────────────────────────────────────────────
+# Show the time until each 5h/7d window resets (↻2h10m). Set 0 to hide it.
+: "${CC_VITAMINS_RESET_COUNTDOWN:=1}"
+
+# ── ccusage ("today across all sessions") ────────────────────────────────────
+# 1   = use an installed `ccusage` (npm i -g ccusage); hidden if it is missing.
+# npx = also fall back to `npx ccusage@latest` (downloads code from npm).
+# 0   = disable the "today $" segment entirely.
+: "${CC_VITAMINS_CCUSAGE:=1}"
+# How long (seconds) to serve the cached ccusage value before refreshing.
+: "${CC_VITAMINS_CCUSAGE_TTL:=30}"

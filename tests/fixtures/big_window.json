@@ -1,0 +1,10 @@
+{
+  "cwd": "/nonexistent/bigproj",
+  "session_id": "sess-big",
+  "model": { "display_name": "Sonnet 4.6 [1M]" },
+  "context_window": {
+    "used_percentage": 30.0,
+    "total_input_tokens": 300000,
+    "context_window_size": 1000000
+  }
+}

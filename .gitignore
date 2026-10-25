@@ -1,0 +1,10 @@
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
+
+# Local test / cache artifacts
+*.bak
+*.bak.*
+tmp/
+.cache/

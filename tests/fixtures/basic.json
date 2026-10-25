@@ -1,0 +1,17 @@
+{
+  "cwd": "/nonexistent/myproject",
+  "session_id": "sess-basic",
+  "model": { "id": "claude-sonnet-4-6", "display_name": "Sonnet 4.6" },
+  "effort": { "level": "high" },
+  "cost": {
+    "total_cost_usd": 1.2345,
+    "total_duration_ms": 1425000,
+    "total_lines_added": 40,
+    "total_lines_removed": 7
+  },
+  "context_window": {
+    "used_percentage": 42.3,
+    "total_input_tokens": 84000,
+    "context_window_size": 200000
+  }
+}
