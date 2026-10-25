@@ -11,7 +11,7 @@
 
 set -u
 
-TESTS_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+TESTS_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=${TESTS_DIR%/tests}
 BIN="$ROOT_DIR/bin/cc-vitamins"
 FIX="$TESTS_DIR/fixtures"
@@ -152,6 +152,11 @@ done
 out=$(COLUMNS=500 CC_VITAMINS_LINE2="session_cost ratelimits" "$BIN" < "$TMPROOT/max.json")
 assert_lines "wrap/wide-no-wrap" "$out" 2
 
+# ── Case: escape sequences in field values are neutralized ───────────────────
+out=$(printf '%s' '{"cwd":"/x/evil\\033]0;pwned\\007dir","session_id":"s-esc","session_name":"a\\nb","model":{"display_name":"M"}}' \
+  | "$BIN" | sed -n 1p)
+assert_equals "escape/stripped" "$out" "evil033]0;pwned007dir [anb] · M"
+
 # ── Case: comma-decimal locale still renders numbers ─────────────────────────
 for loc in de_DE.UTF-8 uk_UA.UTF-8; do
   out=$(LC_ALL=$loc LANG=$loc CC_VITAMINS_LINE2="context" render basic.json 2>&1)
@@ -168,7 +173,8 @@ assert_equals "install/keeps-keys" "$(jq -r .model "$CFG/settings.json")" "opus"
 CLAUDE_CONFIG_DIR="$CFG" sh "$ROOT_DIR/install.sh" >/dev/null 2>&1
 CLAUDE_CONFIG_DIR="$CFG" sh "$ROOT_DIR/install.sh" --uninstall >/dev/null 2>&1
 assert_equals "uninstall/restores" "$(jq -r .statusLine.command "$CFG/settings.json")" "echo it's mine"
-[ ! -d "$CFG/cc-vitamins" ] && ok "uninstall/removes-files" || bad "uninstall/removes-files" "dir still exists"
+if [ -d "$CFG/cc-vitamins" ]; then bad "uninstall/removes-files" "dir still exists"
+else ok "uninstall/removes-files"; fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

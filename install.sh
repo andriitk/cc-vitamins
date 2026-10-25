@@ -84,6 +84,7 @@ do_uninstall() {
       if [ -f "$BACKUP_MARKER" ] && [ "$(jq -r 'has("statusLine")' "$BACKUP_MARKER" 2>/dev/null)" = "true" ]; then
         _prev=$(jq -c '.statusLine' "$BACKUP_MARKER")
         if [ "$DRY_RUN" = "1" ]; then info "[dry-run] restore statusLine: $_prev"
+        # shellcheck disable=SC2016 # $prev is a jq variable
         else atomic_write_settings '.statusLine = $prev' --argjson prev "$_prev"; fi
         info "Restored the previous statusLine."
       else
@@ -104,7 +105,7 @@ do_uninstall() {
 [ "$ACTION" = "uninstall" ] && do_uninstall
 
 # ── Locate source files (local checkout or fetch for curl | sh) ──────────────
-SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || echo "")
+SELF_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd || echo "")
 CLEANUP_SRC=""
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/bin/cc-vitamins" ]; then
   SRC="$SELF_DIR"
@@ -183,6 +184,7 @@ backup_settings
 if [ "$DRY_RUN" = "1" ]; then
   info "[dry-run] set statusLine.command = $STATUSLINE_CMD"
 else
+  # shellcheck disable=SC2016 # $cmd is a jq variable
   atomic_write_settings '.statusLine = {type: "command", command: $cmd, padding: 0, refreshInterval: 60}' \
     --arg cmd "$STATUSLINE_CMD"
 fi

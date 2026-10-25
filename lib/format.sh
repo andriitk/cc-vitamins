@@ -5,6 +5,8 @@
 # init_colors — define color escapes, honoring NO_COLOR.
 # When NO_COLOR is set (to anything, per https://no-color.org) every color
 # variable becomes empty, so the rendered output is plain text.
+# The colors are used by the sourcing script, not here (SC2034).
+# shellcheck disable=SC2034
 init_colors() {
   if [ -n "${NO_COLOR:-}" ]; then
     RESET=""; BOLD=""; DIM=""

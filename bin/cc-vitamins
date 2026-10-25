@@ -14,6 +14,10 @@
 #
 # This project is an unofficial community tool, not affiliated with Anthropic.
 
+# Field variables are assigned by `eval` of jq output (SC2154), and segment
+# functions are called by name from CC_VITAMINS_LINE1/2 (SC2329).
+# shellcheck disable=SC2154,SC2329
+
 # Numbers in the JSON use a "." decimal point. Under locales such as de_DE or
 # uk_UA, printf '%.0f' rejects "42.3", so pin numeric formatting to C.
 LC_ALL=C
@@ -29,7 +33,7 @@ while [ -L "$SCRIPT_PATH" ]; do
     *)  SCRIPT_PATH=$(dirname "$SCRIPT_PATH")/$_link ;;
   esac
 done
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
 ROOT_DIR=${SCRIPT_DIR%/bin}
 LIB_DIR="$ROOT_DIR/lib"
 
@@ -51,10 +55,12 @@ input=$(cat)
 
 # ── Parse everything with ONE jq call into shell-quoted assignments ──────────
 # `q` renders null as an empty string and everything else via @sh, so eval is
-# safe for arbitrary field values. cache_warm keeps false-vs-missing semantics:
+# safe for arbitrary field values. It also drops control characters and
+# backslashes: output goes through printf %b, and a directory or session name
+# must not be able to smuggle in terminal escape sequences. cache_warm keeps false-vs-missing semantics:
 # an empty value means prompt_cache was absent, "false" means present but cold.
 _assignments=$(printf '%s' "$input" | jq -r '
-  def q: (if . == null then "" else (. | tostring) end) | @sh;
+  def q: (if . == null then "" else (. | tostring | gsub("[[:cntrl:]\\\\]"; "")) end) | @sh;
   "cwd="                 + ((.cwd // .workspace.current_dir) | q),
   "session_id="          + (.session_id | q),
   "transcript_path="     + (.transcript_path | q),
@@ -180,9 +186,12 @@ l1_dir() {
 
 l1_git() {
   [ -n "$cwd" ] || return 0
-  _branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null) || return 0
+  # core.fsmonitor=false: a repo's own config must not make us run a command.
+  _branch=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$cwd" symbolic-ref --short HEAD 2>/dev/null) \
+    || return 0
+  _branch=$(printf '%s' "$_branch" | tr -d '\000-\037\177\\')
   line1="${line1} ${BLUE}git:(${_branch})${RESET}"
-  if [ -n "$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" status --porcelain 2>/dev/null)" ]; then
+  if [ -n "$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$cwd" status --porcelain 2>/dev/null)" ]; then
     line1="${line1}${RED}*${RESET}"
   fi
 }
