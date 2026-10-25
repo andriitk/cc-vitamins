@@ -1,6 +1,7 @@
 {
   "cwd": "/nonexistent/myproject",
   "session_id": "sess-basic",
+  "version": "2.1.296",
   "model": { "id": "claude-sonnet-4-6", "display_name": "Sonnet 4.6" },
   "effort": { "level": "high" },
   "cost": {

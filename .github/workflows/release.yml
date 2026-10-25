@@ -1,0 +1,37 @@
+name: release
+
+# A release is a merged PR that bumps VERSION and adds its CHANGELOG section.
+# This workflow then tags v<VERSION> and publishes the GitHub release; tags are
+# never pushed by hand.
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag and publish v<VERSION> if it is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released"
+            exit 0
+          fi
+          awk -v ver="$version" 'index($0, "## [" ver "]") == 1 { f = 1; next } /^## \[/ { f = 0 } f' \
+            CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
+          {
+            printf '\n**Install or update:**\n\n'
+            printf '```sh\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n```\n' "$GITHUB_REPOSITORY"
+          } >> notes.md
+          gh release create "$tag" --target "$GITHUB_SHA" --title "cc-vitamins $version" --notes-file notes.md

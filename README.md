@@ -56,7 +56,7 @@ cc-vitamins reads each one only when it is there.
 |---|:-:|:-:|:-:|
 | Context bar, tokens, per-turn delta | ✓ | ✓ | ✓ |
 | Prompt cache: hit ratio, warm/cold, expiry | ✓ | ✓ | ✓ |
-| Git, worktree, model, effort, fast mode, duration, +/- lines | ✓ | ✓ | ✓ |
+| Git, worktree, model, effort, fast mode, duration, +/- lines, Claude Code version | ✓ | ✓ | ✓ |
 | Open sessions count | ✓ | ✓ | ✓ |
 | `session $` / `today $` | ≈ API-equivalent | ✓ estimate | ✓ estimate |
 | 5h / 7d usage with reset countdown | ✓ | — | — |
@@ -173,6 +173,7 @@ and the status line never waits for it.
 | Model, effort, fast | `Opus 4.6 high ⚡fast` | Effort only for models that support it. |
 | Duration | `⏱ 47m23s` | Wall-clock session time. |
 | Lines | `+214 -37` | Lines added / removed. |
+| Version | `cc v2.1.296` | Claude Code version, dim. |
 
 **Line 2: what it costs**
 
@@ -253,6 +254,11 @@ make check    # shellcheck + the test suite
 
 Keep the code POSIX `sh` (no bashisms), shellcheck-clean, and add a fixture
 test for new behavior.
+
+Changes land on `main` through pull requests with green CI. A release is a PR
+that bumps `VERSION` and adds its `CHANGELOG.md` section; merging it tags and
+publishes the release automatically. Security issues: see
+[SECURITY.md](SECURITY.md).
 
 ## License
 

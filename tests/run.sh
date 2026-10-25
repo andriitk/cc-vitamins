@@ -62,7 +62,7 @@ printf '%s 0\n' "$(date +%Y%m%d)" > "$XDG_CACHE_HOME/cc-vitamins/day-sess-basic"
 out=$(CC_VITAMINS_LINE2="context session_cost" render basic.json)
 l1=$(printf '%s\n' "$out" | sed -n '1p')
 l2=$(printf '%s\n' "$out" | sed -n '2p')
-assert_equals "basic/line1" "$l1" "myproject · Sonnet 4.6 high · ⏱ 23m45s · +40 -7"
+assert_equals "basic/line1" "$l1" "myproject · Sonnet 4.6 high · ⏱ 23m45s · +40 -7 · cc v2.1.296"
 assert_contains "basic/ctx-bar" "$l2" "ctx █████░░░░░░░ 42%"
 assert_contains "basic/ctx-tokens" "$l2" "84k/200k"
 assert_contains "basic/session-cost" "$l2" "session \$1.23"
