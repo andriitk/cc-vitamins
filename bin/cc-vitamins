@@ -2,7 +2,8 @@
 # cc-vitamins — a polished, portable Claude Code status line.
 #
 #   Line 1 (where am I):  vim mode · dir · git · worktree · agent · session ·
-#                         model · effort · fast mode · duration · +/- lines
+#                         model · effort · fast mode · duration · +/- lines ·
+#                         Claude Code version
 #   Line 2 (what it costs): context bar · prompt cache · active sessions ·
 #                         session $ · today $ · spend limit · rate limits
 #
@@ -70,6 +71,7 @@ _assignments=$(printf '%s' "$input" | jq -r '
   "agent_name="          + (.agent.name | q),
   "vim_mode="            + (.vim.mode | q),
   "model="               + (.model.display_name | q),
+  "cc_version="          + (.version | q),
   "effort="              + (.effort.level | q),
   "fast_mode="           + (.fast_mode | q),
   "lines_added="         + (.cost.total_lines_added | q),
@@ -123,7 +125,7 @@ CONFIG_FILE="$CONFIG_HOME/cc-vitamins/config"
 : "${CC_VITAMINS_PCT_RED:=80}"
 : "${CC_VITAMINS_CACHE_WARN_SECS:=600}"
 : "${CC_VITAMINS_RESET_COUNTDOWN:=1}"
-: "${CC_VITAMINS_LINE1:=vim dir git worktree agent session model effort fast duration lines}"
+: "${CC_VITAMINS_LINE1:=vim dir git worktree agent session model effort fast duration lines version}"
 : "${CC_VITAMINS_LINE2:=context cache sessions session_cost today spend ratelimits}"
 
 export CC_VITAMINS_BIGWIN_THRESHOLD CC_VITAMINS_CTX_PCT_YELLOW CC_VITAMINS_CTX_PCT_ORANGE \
@@ -232,6 +234,10 @@ l1_duration() {
 l1_lines() {
   { [ "${lines_added:-0}" -gt 0 ] 2>/dev/null || [ "${lines_removed:-0}" -gt 0 ] 2>/dev/null; } || return 0
   line1="${line1}${SEP}${GREEN}+${lines_added:-0}${RESET} ${RED}-${lines_removed:-0}${RESET}"
+}
+
+l1_version() {
+  [ -n "$cc_version" ] && line1="${line1}${SEP}${DIM}cc v${cc_version}${RESET}"
 }
 
 # ── Line 2 segments ──────────────────────────────────────────────────────────

@@ -11,8 +11,8 @@
 # ── Segments: which segments appear, and in what order ───────────────────────
 # Remove a word to hide that segment; reorder words to reorder segments.
 #
-# Line 1 segments: vim dir git worktree agent session model effort fast duration lines
-: "${CC_VITAMINS_LINE1:=vim dir git worktree agent session model effort fast duration lines}"
+# Line 1 segments: vim dir git worktree agent session model effort fast duration lines version
+: "${CC_VITAMINS_LINE1:=vim dir git worktree agent session model effort fast duration lines version}"
 #
 # Line 2 segments: context cache sessions session_cost today spend ratelimits
 : "${CC_VITAMINS_LINE2:=context cache sessions session_cost today spend ratelimits}"
