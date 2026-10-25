@@ -78,7 +78,8 @@ watch are `5h` and `7d`.
 
 ## Install
 
-**Requirements:** macOS or Linux (on Windows, use WSL), `jq`, and `git`.
+**Requirements:** macOS or Linux (on Windows, use WSL), `jq`, and `git`
+(the one-liner clones the repo into a temp dir).
 Optional: [`ccusage`](https://github.com/ryoppippi/ccusage) for the
 "today across all sessions" segment. The prompt-cache and spend-limit segments
 need Claude Code v2.1.251 or later; older versions just don't show them.
@@ -110,13 +111,16 @@ Then open a new Claude Code session. The installer:
 - if you already have a different status line, asks before replacing it, and
   leaves it alone when there is no terminal to ask in. `--force` replaces it.
 
+**Update:** run the same one-liner again. **Uninstall** (restores the status
+line you had before the very first install and removes the files):
+
 ```sh
-./install.sh --dry-run     # show what would change, change nothing
-./install.sh --uninstall   # restore your previous statusLine, remove the files
+curl -fsSL https://raw.githubusercontent.com/andriitk/cc-vitamins/main/install.sh | sh -s -- --uninstall
 ```
 
-Re-running the installer updates cc-vitamins in place, and `--uninstall` still
-restores the status line you had before the very first install.
+Other flags work the same way after `sh -s --`, or directly on `./install.sh`
+in a checkout: `--dry-run` shows what would change, `--force` replaces an
+existing status line without asking.
 
 <details>
 <summary>Manual install</summary>
