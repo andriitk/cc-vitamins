@@ -83,8 +83,8 @@ do_uninstall() {
     if [ "$_current" = "$STATUSLINE_CMD" ]; then
       if [ -f "$BACKUP_MARKER" ] && [ "$(jq -r 'has("statusLine")' "$BACKUP_MARKER" 2>/dev/null)" = "true" ]; then
         _prev=$(jq -c '.statusLine' "$BACKUP_MARKER")
-        if [ "$DRY_RUN" = "1" ]; then info "[dry-run] restore statusLine: $_prev"
         # shellcheck disable=SC2016 # $prev is a jq variable
+        if [ "$DRY_RUN" = "1" ]; then info "[dry-run] restore statusLine: $_prev"
         else atomic_write_settings '.statusLine = $prev' --argjson prev "$_prev"; fi
         info "Restored the previous statusLine."
       else

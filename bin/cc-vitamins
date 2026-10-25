@@ -15,8 +15,8 @@
 # This project is an unofficial community tool, not affiliated with Anthropic.
 
 # Field variables are assigned by `eval` of jq output (SC2154), and segment
-# functions are called by name from CC_VITAMINS_LINE1/2 (SC2329).
-# shellcheck disable=SC2154,SC2329
+# functions are called by name from CC_VITAMINS_LINE1/2 (SC2317/SC2329).
+# shellcheck disable=SC2154,SC2317,SC2329
 
 # Numbers in the JSON use a "." decimal point. Under locales such as de_DE or
 # uk_UA, printf '%.0f' rejects "42.3", so pin numeric formatting to C.
@@ -189,6 +189,7 @@ l1_git() {
   # core.fsmonitor=false: a repo's own config must not make us run a command.
   _branch=$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$cwd" symbolic-ref --short HEAD 2>/dev/null) \
     || return 0
+  # shellcheck disable=SC1003 # the trailing \\ deletes backslashes
   _branch=$(printf '%s' "$_branch" | tr -d '\000-\037\177\\')
   line1="${line1} ${BLUE}git:(${_branch})${RESET}"
   if [ -n "$(GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -C "$cwd" status --porcelain 2>/dev/null)" ]; then
