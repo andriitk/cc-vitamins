@@ -98,6 +98,12 @@ do_uninstall() {
   fi
   run "rm -rf '$DEST'"
   info "Removed $DEST"
+  for _rc in "${ZDOTDIR:-$HOME}/.zshrc" "$HOME/.bashrc"; do
+    if [ -f "$_rc" ] && grep -qF '# >>> cc-vitamins accounts >>>' "$_rc"; then
+      info "Accounts shell integration is still in $_rc (inactive now); delete the"
+      info "  '# >>> cc-vitamins accounts >>>' block there. Extra account dirs were not touched."
+    fi
+  done
   log "Done."
   exit 0
 }
@@ -137,7 +143,7 @@ run "cp -R '$SRC/bin' '$DEST/'"
 run "cp -R '$SRC/lib' '$DEST/'"
 run "cp '$SRC/config.example' '$DEST/config.example'"
 [ -f "$SRC/README.md" ] && run "cp '$SRC/README.md' '$DEST/README.md'"
-run "chmod +x '$DEST/bin/cc-vitamins'"
+run "chmod +x '$DEST/bin/cc-vitamins' '$DEST/bin/ccv'"
 
 # ── Wire up statusLine ───────────────────────────────────────────────────────
 run "mkdir -p '$CONFIG_DIR'"
@@ -193,4 +199,7 @@ log ""
 log "Installed. statusLine set to:"
 info "$STATUSLINE_CMD"
 log "Open a new Claude Code session (or wait for the next render) to see it."
+log ""
+log "Several Claude accounts? Add one with:  $DEST/bin/ccv add <name>"
+log "  (see docs/ACCOUNTS.md; nothing changes until you do)"
 [ "$DRY_RUN" = "1" ] && log "(dry-run: nothing was actually changed)"

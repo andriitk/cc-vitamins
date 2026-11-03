@@ -1,6 +1,6 @@
 .POSIX:
 
-SHELL_FILES = bin/cc-vitamins lib/format.sh lib/sessions.sh lib/cost.sh install.sh tests/run.sh
+SHELL_FILES = bin/cc-vitamins bin/ccv lib/format.sh lib/sessions.sh lib/cost.sh lib/accounts.sh install.sh tests/run.sh tests/fake-claude
 
 .PHONY: test lint check
 
