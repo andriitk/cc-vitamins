@@ -97,6 +97,16 @@ assert_contains "delta/up" "$out" "▲+14k"
 out=$(CC_VITAMINS_LINE2="sessions" render basic.json)
 assert_contains "sessions/present" "$out" "session"
 
+# ── Case: one process with several session IDs counts once ────────────────
+SD="$XDG_CACHE_HOME/cc-vitamins/sessions"
+rm -rf "$SD"; mkdir -p "$SD"
+printf '%s' "$$" > "$SD/old-session-of-this-process"
+printf '%s' "$$" > "$SD/new-session-of-this-process"
+printf '%s' "999999" > "$SD/dead-session"
+out=$(CC_VITAMINS_LINE2="sessions" sh -c '. "$0/lib/sessions.sh"; count_live_sessions "$1"' "$ROOT_DIR" "$SD")
+assert_equals "sessions/dedupe-pids" "$out" "1"
+if [ -f "$SD/dead-session" ]; then bad "sessions/prune-dead" "dead heartbeat kept"; else ok "sessions/prune-dead"; fi
+
 # ── Case: missing jq produces a single hint line (not a crash) ───────────────
 fakepath="$TMPROOT/nojq"
 mkdir -p "$fakepath"
@@ -258,6 +268,16 @@ assert_equals "acc/trust-carried" "$(jq -r --arg k "$HOME/other" '.projects[$k].
 if [ -L "$A/commands" ]; then ok "acc/new-entry-linked"; else bad "acc/new-entry-linked" "commands not linked"; fi
 assert_equals "acc/primary-login-kept" "$(jq -r '.oauthAccount.organizationType' "$HOME/.claude.json")" "claude_enterprise"
 
+# Heal: Claude Code replaced shared files with copies (write-then-rename).
+rm -f "$A/settings.json"; cp "$P/settings.json" "$A/settings.json"
+printf 'old shared\n' > "$P/CLAUDE.md"; touch -t 202601010000 "$P/CLAUDE.md"
+rm -f "$A/CLAUDE.md"; printf 'newer in account\n' > "$A/CLAUDE.md"
+(cd "$HOME/other" && "$CCV" launch >/dev/null 2>&1)
+if [ -L "$A/settings.json" ]; then ok "acc/heal-identical-relinked"; else bad "acc/heal-identical-relinked" "still a file"; fi
+if [ -L "$A/CLAUDE.md" ]; then ok "acc/heal-newer-relinked"; else bad "acc/heal-newer-relinked" "still a file"; fi
+assert_equals "acc/heal-newer-wins" "$(cat "$P/CLAUDE.md")" "newer in account"
+assert_contains "acc/heal-backup-kept" "$(cat "${XDG_STATE_HOME:-$HOME/.local/state}"/cc-vitamins/healed/*/CLAUDE.md.shared 2>/dev/null)" "old shared"
+
 # Auth override warning names the variable, never its value.
 out=$(cd "$HOME/other" && ANTHROPIC_API_KEY=sk-test-value "$CCV" launch 2>&1 >/dev/null)
 assert_contains "acc/override-warns" "$out" "ANTHROPIC_API_KEY is set"
@@ -325,6 +345,17 @@ out=$("$CCV" shell-init)
 # shellcheck disable=SC2016 # literal text expected in the output
 assert_contains "acc/shell-init-claude" "$out" 'claude() { command "$CCV_BIN" launch "$@"; }'
 assert_contains "acc/shell-init-bin" "$out" "CCV_BIN='$ROOT_DIR/bin/ccv'"
+
+# ── Case: install from an extra account whose files link to the primary ──
+X="$TMPROOT/xacct"; XP="$TMPROOT/xprimary"
+mkdir -p "$X" "$XP"
+CLAUDE_CONFIG_DIR="$XP" sh "$ROOT_DIR/install.sh" --force >/dev/null 2>&1
+ln -s "$XP/settings.json" "$X/settings.json"; ln -s "$XP/cc-vitamins" "$X/cc-vitamins"
+out=$(CLAUDE_CONFIG_DIR="$X" sh "$ROOT_DIR/install.sh" < /dev/null 2>&1)
+case "$out" in *"A different statusLine"*) bad "install/linked-account-no-prompt" "$out" ;; *) ok "install/linked-account-no-prompt" ;; esac
+if [ -L "$X/settings.json" ]; then ok "install/linked-account-keeps-link"
+else bad "install/linked-account-keeps-link" "settings.json link was replaced by a file"; fi
+assert_equals "install/linked-account-keeps-path" "$(jq -r .statusLine.command "$XP/settings.json")" "$XP/cc-vitamins/bin/cc-vitamins"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

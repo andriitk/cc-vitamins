@@ -24,7 +24,20 @@ REPO_BRANCH="main"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 DEST="$CONFIG_DIR/cc-vitamins"
 SETTINGS="$CONFIG_DIR/settings.json"
+# An extra ccv account links settings.json to the primary one. Edit the real
+# file: an atomic mv onto the link would replace it with a private copy.
+while [ -L "$SETTINGS" ]; do
+  _l=$(readlink "$SETTINGS")
+  case "$_l" in /*) SETTINGS=$_l ;; *) SETTINGS=$(dirname "$SETTINGS")/$_l ;; esac
+done
 STATUSLINE_CMD="$DEST/bin/cc-vitamins"
+
+# is_ours <command>  ->  status 0 when the statusLine command is this install,
+# also when reached through another path to the same file (an extra ccv account
+# links its cc-vitamins to the primary one).
+is_ours() {
+  [ "$1" = "$STATUSLINE_CMD" ] || { [ -e "$1" ] && [ -e "$STATUSLINE_CMD" ] && [ "$1" -ef "$STATUSLINE_CMD" ]; }
+}
 BACKUP_MARKER="$DEST/.statusline-backup.json"
 
 DRY_RUN=0
@@ -80,7 +93,7 @@ do_uninstall() {
   if [ -f "$SETTINGS" ]; then
     backup_settings
     _current=$(jq -r '.statusLine.command // empty' "$SETTINGS" 2>/dev/null || true)
-    if [ "$_current" = "$STATUSLINE_CMD" ]; then
+    if is_ours "$_current"; then
       if [ -f "$BACKUP_MARKER" ] && [ "$(jq -r 'has("statusLine")' "$BACKUP_MARKER" 2>/dev/null)" = "true" ]; then
         _prev=$(jq -c '.statusLine' "$BACKUP_MARKER")
         # shellcheck disable=SC2016 # $prev is a jq variable
@@ -151,6 +164,9 @@ EXISTING=""
 if [ -f "$SETTINGS" ]; then
   EXISTING=$(jq -r '.statusLine.command // empty' "$SETTINGS" 2>/dev/null || true)
 fi
+
+# Already ours through another path: keep that path, it is shared by accounts.
+if [ -n "$EXISTING" ] && is_ours "$EXISTING"; then STATUSLINE_CMD=$EXISTING; fi
 
 if [ -n "$EXISTING" ] && [ "$EXISTING" != "$STATUSLINE_CMD" ]; then
   log ""
