@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - Unreleased
+
+### Added
+- Several Claude accounts in one Claude Code (`ccv`). Every account shares
+  skills, plugins, MCP servers, settings, memory and sessions with the primary
+  config directory; only the login and organization policy differ.
+  `ccv add` creates an account and logs in, `ccv route` / `ccv default` pick
+  the account per folder, `claude --account <name>` launches one-off, and
+  `! ccv use <name>` inside a session resumes the same session under another
+  account. See `docs/ACCOUNTS.md`.
+- `account` segment at the start of line 1 (`● personal Pro`), shown only with
+  two or more accounts. Never shows email, organization names or IDs.
+
 ## [0.2.0] - 2026-10-25
 
 ### Added

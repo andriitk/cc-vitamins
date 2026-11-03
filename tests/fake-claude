@@ -1,0 +1,35 @@
+#!/bin/sh
+# Stand-in for Claude Code in tests. Logs each call as
+#   cfg=<CLAUDE_CONFIG_DIR or <unset>> args=<args>
+# `auth login` writes a login into the account's .claude.json; with
+# FAKE_SWITCH_TO set, the first interactive run asks ccv to switch the way
+# `! ccv use <account>` does inside Claude, then waits to be stopped.
+log=${FAKE_CLAUDE_LOG:?}
+printf 'cfg=%s args=%s\n' "${CLAUDE_CONFIG_DIR:-<unset>}" "$*" >> "$log"
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then json="$CLAUDE_CONFIG_DIR/.claude.json"; else json="$HOME/.claude.json"; fi
+case "${1:-}" in
+  auth)
+    if [ "${2:-}" = login ]; then
+      [ -f "$json" ] || printf '{}' > "$json"
+      jq --arg t "${FAKE_ORG_TYPE:-claude_pro}" '.oauthAccount = {accountUuid: "fake-uuid", organizationType: $t}' \
+        "$json" > "$json.tmp" && cat "$json.tmp" > "$json" && rm -f "$json.tmp"
+    fi
+    exit 0 ;;
+esac
+if [ -n "${FAKE_SWITCH_TO:-}" ] && [ ! -f "$log.switched" ]; then
+  : > "$log.switched"
+  trap 'exit 143' TERM
+  # Like Claude Code: a per-process registry holds the real session, a saved
+  # transcript exists, and the shell-mode env var is stale (as after a resume).
+  cfg=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+  sid=11111111-2222-3333-4444-555555555555
+  mkdir -p "$cfg/sessions" "$cfg/projects/fake"
+  printf '{"pid":%s,"sessionId":"%s"}\n' "$$" "$sid" > "$cfg/sessions/$$.json"
+  printf '{}\n' > "$cfg/projects/fake/$sid.jsonl"
+  CLAUDECODE=1 CLAUDE_PID=$$ CLAUDE_CODE_SESSION_ID=99999999-0000-0000-0000-000000000000 \
+    "$CCV_BIN" use "$FAKE_SWITCH_TO" >> "$log" 2>&1
+  sleep 5 &
+  wait $!
+  exit 0
+fi
+exit 0

@@ -1,0 +1,667 @@
+#!/bin/sh
+# ccv — switch Claude Code between several Claude accounts.
+#
+# Every account shares skills, plugins, MCP servers, settings, memory and
+# transcripts with the primary config directory; only the login differs.
+# Inside a session, `! ccv use <account>` resumes the same session under
+# another account. Design and limits: docs/ACCOUNTS.md.
+#
+# This project is an unofficial community tool, not affiliated with Anthropic.
+
+# jq and awk programs are single-quoted on purpose (SC2016); "~/..." in
+# printf is display text, not a path to expand (SC2088).
+# shellcheck disable=SC2016,SC2088
+
+set -u
+
+# ── Resolve install directory and source modules ─────────────────────────────
+SCRIPT_PATH=$0
+while [ -L "$SCRIPT_PATH" ]; do
+  _link=$(readlink "$SCRIPT_PATH")
+  case "$_link" in
+    /*) SCRIPT_PATH=$_link ;;
+    *)  SCRIPT_PATH=$(dirname "$SCRIPT_PATH")/$_link ;;
+  esac
+done
+BIN_DIR=$(CDPATH='' cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+CCV_SELF="$BIN_DIR/ccv"
+LIB_DIR="${BIN_DIR%/bin}/lib"
+# shellcheck source=lib/accounts.sh
+. "$LIB_DIR/accounts.sh"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/cc-vitamins"
+MARKER=".ccv-account"
+RC_BEGIN="# >>> cc-vitamins accounts >>>"
+RC_END="# <<< cc-vitamins accounts <<<"
+COLORS="green yellow magenta cyan red blue white"
+
+say()  { printf '%s\n' "$*"; }
+warn() { printf 'ccv: %s\n' "$*" >&2; }
+die()  { printf 'ccv: %s\n' "$*" >&2; exit 1; }
+
+command -v jq >/dev/null 2>&1 || die "jq is required (https://jqlang.github.io/jq/)"
+
+inside_claude() { [ -n "${CLAUDECODE:-}" ]; }
+
+# tilde <path>  ->  path with $HOME shown as ~ (for the config file and output)
+tilde() {
+  _h=$(acc_real "$HOME")
+  case "$1" in
+    "$HOME" | "$_h") printf '~' ;;
+    "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;;
+    "$_h"/*)   printf '~/%s' "${1#"$_h"/}" ;;
+    *)         printf '%s' "$1" ;;
+  esac
+}
+
+# real_claude  ->  the Claude Code executable (never this wrapper)
+real_claude() {
+  _c=${CCV_CLAUDE:-}
+  [ -n "$_c" ] || _c=$(command -v claude 2>/dev/null) || :
+  [ -n "$_c" ] || die "Claude Code (claude) not found on PATH"
+  [ "$_c" = "$CCV_SELF" ] && die "claude resolves to ccv itself; fix PATH"
+  printf '%s' "$_c"
+}
+
+# run_claude_as <account> <args...>  ->  run Claude Code with that account's env
+run_claude_as() {
+  _acc=$1; shift
+  _cfg=$(acc_config_env "$_acc")
+  _bin=$(real_claude)
+  if [ -n "$_cfg" ]; then CLAUDE_CONFIG_DIR=$_cfg "$_bin" "$@"
+  else env -u CLAUDE_CONFIG_DIR "$_bin" "$@"; fi
+}
+
+# ── Config file editing ──────────────────────────────────────────────────────
+# config_rewrite <awk program> [awk -v args...]  ->  atomic in-place rewrite
+config_rewrite() {
+  _prog=$1; shift
+  _tmp="$ACCOUNTS_FILE.tmp.$$"
+  awk "$@" "$_prog" "$ACCOUNTS_FILE" > "$_tmp" || { rm -f "$_tmp"; die "could not update $ACCOUNTS_FILE"; }
+  mv "$_tmp" "$ACCOUNTS_FILE"
+}
+
+config_append() {
+  _tmp="$ACCOUNTS_FILE.tmp.$$"
+  { cat "$ACCOUNTS_FILE"; printf '%s\n' "$1"; } > "$_tmp" && mv "$_tmp" "$ACCOUNTS_FILE"
+}
+
+# config_init  ->  create the config with the current login as the primary
+config_init() {
+  [ -f "$ACCOUNTS_FILE" ] && return 0
+  mkdir -p "$(dirname "$ACCOUNTS_FILE")" || die "cannot create $(dirname "$ACCOUNTS_FILE")"
+  _primary=$(tilde "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
+  cat > "$ACCOUNTS_FILE" <<EOF
+# cc-vitamins accounts — see docs/ACCOUNTS.md
+#
+# account <name> <config-dir> [color]   first line = primary (holds shared content)
+# route   <folder> <name>               folder and everything below it
+# default <name>                        every other folder
+
+account default $_primary blue
+EOF
+  say "Created $(tilde "$ACCOUNTS_FILE") with your current login as account 'default'."
+}
+
+# ── Sharing: links and the shared parts of .claude.json ──────────────────────
+# is_per_account <entry>  ->  status 0 for entries that must never be shared
+is_per_account() {
+  case "$1" in
+    .claude.json | .claude.json.* | .credentials.json | .credentials.json.* | \
+    remote-settings.json* | policy-limits.json* | backups | "$MARKER")
+      return 0 ;;
+  esac
+  return 1
+}
+
+# link_account <name>  ->  link every shareable primary entry into the account
+# directory. Idempotent; never replaces an existing file or directory.
+link_account() {
+  _p=$(acc_dir "$(acc_primary)")
+  _d=$(acc_dir "$1")
+  [ "$_p" = "$_d" ] && return 0
+  [ -d "$_p" ] || die "primary config dir not found: $_p"
+  for _e in "$_p"/* "$_p"/.[!.]* "$_p"/..?*; do
+    [ -e "$_e" ] || [ -L "$_e" ] || continue
+    _b=${_e##*/}
+    is_per_account "$_b" && continue
+    [ -e "$_d/$_b" ] || [ -L "$_d/$_b" ] || ln -s "$_p/$_b" "$_d/$_b"
+  done
+}
+
+# write_json <file> <jq filter> [jq args...]  ->  atomic update, mode 600
+write_json() {
+  _f=$1; _filter=$2; shift 2
+  _tmp="$_f.ccv.$$"
+  if jq "$@" "$_filter" "$_f" > "$_tmp" 2>/dev/null; then
+    chmod 600 "$_tmp" && mv "$_tmp" "$_f"
+  else
+    rm -f "$_tmp"; warn "could not update $(tilde "$_f")"
+  fi
+}
+
+# seed_json <name>  ->  new account starts without the onboarding wizard
+seed_json() {
+  _j=$(acc_json "$1")
+  [ -f "$_j" ] && return 0
+  _pj=$(acc_json "$(acc_primary)")
+  if [ -f "$_pj" ]; then
+    jq '{hasCompletedOnboarding, lastOnboardingVersion, mcpServers} | with_entries(select(.value != null))' \
+      "$_pj" > "$_j" 2>/dev/null || printf '{}\n' > "$_j"
+  else
+    printf '{}\n' > "$_j"
+  fi
+  chmod 600 "$_j"
+}
+
+# sync_shared_json <name> <folder>  ->  same user MCP servers in every account
+# (union by name, the primary wins on conflicts), and folder trust carried over
+# to the account being launched. Writes only files that actually differ.
+sync_shared_json() {
+  _files=""
+  _primary=$(acc_primary)
+  for _n in $(acc_names); do
+    [ "$_n" = "$_primary" ] && continue
+    _j=$(acc_json "$_n"); [ -f "$_j" ] && _files="$_files$_j
+"
+  done
+  _pj=$(acc_json "$_primary")
+  [ -f "$_pj" ] && _files="$_files$_pj
+"
+  [ "$(printf '%s' "$_files" | grep -c .)" -ge 2 ] || return 0
+
+  # One file per line; config dirs contain no newlines or spaces.
+  # shellcheck disable=SC2086
+  set -f; _list=$(printf '%s' "$_files" | tr '\n' ' '); set +f
+  # shellcheck disable=SC2086
+  _merged=$(jq -cS -s '[.[] | .mcpServers // {}] | add' $_list 2>/dev/null) || return 0
+  _folder_l=$2
+  _folder_p=$(acc_real "$2")
+  # shellcheck disable=SC2086
+  _trusted=$(jq -r -s --arg a "$_folder_l" --arg b "$_folder_p" \
+    '[.[] | .projects // {} | (.[$a], .[$b]) | .hasTrustDialogAccepted? // false] | any' $_list 2>/dev/null)
+
+  _target=$(acc_json "$1")
+  printf '%s' "$_files" | while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    _cur=$(jq -cS '.mcpServers // {}' "$_f" 2>/dev/null)
+    [ "$_cur" = "$_merged" ] || write_json "$_f" '.mcpServers = $m' --argjson m "$_merged"
+  done
+  if [ "$_trusted" = "true" ] && [ -f "$_target" ]; then
+    _has=$(jq -r --arg a "$_folder_l" '.projects[$a].hasTrustDialogAccepted // false' "$_target" 2>/dev/null)
+    [ "$_has" = "true" ] || write_json "$_target" \
+      '.projects[$a] = ((.projects[$a] // {}) + {hasTrustDialogAccepted: true})' --arg a "$_folder_l"
+  fi
+}
+
+# auth_overrides  ->  names (never values) of env vars that beat any login
+auth_overrides() {
+  _found=""
+  for _v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN \
+            CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
+    eval "_val=\${$_v:-}"
+    # shellcheck disable=SC2154 # assigned by eval
+    [ -n "$_val" ] && _found="$_found $_v"
+  done
+  printf '%s' "${_found# }"
+}
+
+# prepare_account <name>  ->  links + shared JSON before a launch
+prepare_account() {
+  if [ "$1" != "$(acc_primary)" ]; then
+    _d=$(acc_dir "$1")
+    [ -f "$_d/$MARKER" ] || die "account '$1' has no directory at $(tilde "$_d"); run: ccv add $1"
+    link_account "$1"
+  fi
+  sync_shared_json "$1" "$PWD"
+}
+
+# ── launch: the `claude` shell function lands here ───────────────────────────
+# Flags worth keeping when the session is resumed under another account.
+# Prompts, --continue, --resume and --session-id are deliberately dropped.
+keep_flags() {
+  _keep=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --model | --permission-mode | --add-dir | --plugin-dir | --mcp-config | --settings | \
+      --agent | --effort | --fallback-model | --append-system-prompt | --system-prompt)
+        [ $# -ge 2 ] && _keep="$_keep$1
+$2
+"
+        shift 2 || shift ;;
+      --model=* | --permission-mode=* | --add-dir=* | --plugin-dir=* | --mcp-config=* | \
+      --settings=* | --agent=* | --effort=* | --dangerously-skip-permissions | --verbose | \
+      --ide | --chrome | --no-chrome | --strict-mcp-config)
+        _keep="$_keep$1
+"
+        shift ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s' "$_keep"
+}
+
+cmd_launch() {
+  acc_enabled || exec "$(real_claude)" "$@"
+
+  # --account <name> is ours; Claude Code never sees it.
+  _explicit=""
+  _n=$#
+  while [ "$_n" -gt 0 ]; do
+    _a=$1; shift; _n=$(( _n - 1 ))
+    case "$_a" in
+      --account)   [ "$_n" -gt 0 ] || die "--account needs a name"
+                   _explicit=$1; shift; _n=$(( _n - 1 )) ;;
+      --account=*) _explicit=${_a#--account=} ;;
+      *)           set -- "$@" "$_a" ;;
+    esac
+  done
+
+  if [ -n "$_explicit" ]; then
+    _acc=$(acc_resolve "$_explicit") || die "unknown account: $_explicit (see: ccv)"
+  elif [ -n "${CCV_ACCOUNT:-}" ] && acc_exists "$CCV_ACCOUNT"; then
+    _acc=$CCV_ACCOUNT
+  else
+    _acc=$(acc_for_path "$PWD")
+  fi
+
+  _over=$(auth_overrides)
+  [ -n "$_over" ] && warn "$_over is set and overrides every account login (unset it to use '$_acc')."
+
+  _token=$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+  [ -n "$_token" ] || _token="$$$(date +%s)"
+  _req="$STATE_DIR/switch/$_token"
+  _kept=$(keep_flags "$@")
+
+  CCV_RUN=$_token; CCV_BIN=$CCV_SELF; PATH="$BIN_DIR:$PATH"
+  export CCV_RUN CCV_BIN PATH
+  # A handler (not "ignore") so Ctrl+C before Claude takes the terminal does
+  # not kill this loop; Claude itself gets the default disposition on exec.
+  trap ':' INT
+
+  while :; do
+    prepare_account "$_acc"
+    run_claude_as "$_acc" "$@"
+    _rc=$?
+    [ -f "$_req" ] || exit "$_rc"
+    _to=$(sed -n 's/^account=//p' "$_req"); _sid=$(sed -n 's/^session=//p' "$_req")
+    rm -f "$_req"
+    acc_exists "$_to" || die "switch target vanished: $_to"
+    _acc=$_to
+    set -- --resume "$_sid"
+    if [ -n "$_kept" ]; then
+      while IFS= read -r _f; do [ -n "$_f" ] && set -- "$@" "$_f"; done <<EOF
+$_kept
+EOF
+    fi
+    printf '\n[ccv] resuming session %s as %s\n\n' "$_sid" "$_acc" >&2
+  done
+}
+
+# ── use ──────────────────────────────────────────────────────────────────────
+valid_uuid() {
+  printf '%s' "$1" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+}
+
+# current_session <claude pid>  ->  the session that Claude process is in now.
+# Claude Code keeps a per-process registry, sessions/<pid>.json, that follows
+# /resume and --resume; CLAUDE_CODE_SESSION_ID in a shell-mode command can be
+# stale after a resume, so it is only the fallback.
+current_session() {
+  _reg="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions/$1.json"
+  _s=""
+  case "$1" in '' | *[!0-9]* ) : ;; *) [ -f "$_reg" ] && _s=$(jq -r '.sessionId // empty' "$_reg" 2>/dev/null) ;; esac
+  valid_uuid "$_s" || _s=${CLAUDE_CODE_SESSION_ID:-}
+  printf '%s' "$_s"
+}
+
+# has_transcript <session id>  ->  status 0 if its transcript exists on disk
+has_transcript() {
+  for _t in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do
+    [ -f "$_t" ] && return 0
+  done
+  return 1
+}
+
+# is_ancestor <pid>  ->  status 0 if pid is a parent of this process
+is_ancestor() {
+  case "$1" in '' | *[!0-9]* ) return 1 ;; esac
+  [ "$1" -gt 1 ] || return 1
+  _p=$$
+  _i=0
+  while [ "$_i" -lt 40 ]; do
+    _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ')
+    case "$_p" in '' | *[!0-9]* ) return 1 ;; esac
+    [ "$_p" = "$1" ] && return 0
+    [ "$_p" -le 1 ] && return 1
+    _i=$(( _i + 1 ))
+  done
+  return 1
+}
+
+cmd_use() {
+  [ $# -ge 1 ] || { cmd_list; return 0; }
+  acc_enabled || die "no accounts configured yet; start with: ccv add <name>"
+  _to=$(acc_resolve "$1") || die "unknown account: $1 (see: ccv)"
+
+  if ! inside_claude; then
+    say "In a terminal, 'ccv use' needs the shell integration (it sets CCV_ACCOUNT)."
+    say "One-off instead: claude --account $_to"
+    return 1
+  fi
+
+  _cur=$(acc_current)
+  [ "$_cur" = "$_to" ] && { say "Already on '$_to'."; return 0; }
+  acc_logged_in "$_to" || die "account '$_to' is not logged in. In a terminal run: ccv login $_to"
+
+  _pid=${CLAUDE_PID:-}
+  _sid=$(current_session "$_pid")
+  valid_uuid "$_sid" || die "no session ID from Claude Code; update Claude Code"
+  # Never stop Claude unless the resume target is really on disk.
+  has_transcript "$_sid" || die "no saved transcript for session $_sid yet; send a message first, then switch"
+  if [ -z "${CCV_RUN:-}" ]; then
+    say "This Claude was not started by the ccv 'claude' function, so it cannot restart itself."
+    say "Type /exit, then run:  claude --account $_to --resume $_sid"
+    return 1
+  fi
+  case "$_pid" in '' | *[!0-9]* ) die "no Claude process ID (CLAUDE_PID)" ;; esac
+  is_ancestor "$_pid" || die "CLAUDE_PID $_pid is not this session's Claude process; refusing"
+
+  mkdir -p "$STATE_DIR/switch" && chmod 700 "$STATE_DIR" "$STATE_DIR/switch" 2>/dev/null
+  _req="$STATE_DIR/switch/$CCV_RUN"
+  if ! { printf 'account=%s\nsession=%s\n' "$_to" "$_sid" > "$_req.tmp" && mv "$_req.tmp" "$_req"; }; then
+    die "cannot write the switch request"
+  fi
+  say "Switching ${_cur:-?} -> $_to; Claude restarts and resumes this session."
+  kill -TERM "$_pid" 2>/dev/null || { rm -f "$_req"; die "could not stop Claude ($_pid)"; }
+}
+
+# ── list ─────────────────────────────────────────────────────────────────────
+cmd_list() {
+  if ! acc_enabled; then
+    say "No accounts configured. Add a second Claude login with: ccv add <name>"
+    return 0
+  fi
+  if inside_claude; then _mark=$(acc_current); _label="current"
+  else
+    _mark=${CCV_ACCOUNT:-}
+    acc_exists "$_mark" || _mark=$(acc_for_path "$PWD")
+    _label="claude here"
+  fi
+  _i=0
+  printf '  %-2s %-14s %-11s %-6s %s\n' '#' 'ACCOUNT' 'PLAN' 'LOGIN' 'CONFIG DIR'
+  for _n in $(acc_names); do
+    _i=$(( _i + 1 ))
+    _plan=$(acc_plan "$_n"); _login=no
+    acc_logged_in "$_n" && _login=yes
+    _m=""; [ "$_n" = "$_mark" ] && _m="  <- $_label"
+    printf '  %-2s %-14s %-11s %-6s %s%s\n' "$_i" "$_n" "${_plan:--}" "$_login" \
+      "$(tilde "$(acc_dir "$_n")")" "$_m"
+  done
+  if inside_claude; then say ""; say "Switch this session:  ! ccv use <name|#>"; fi
+}
+
+# ── add / login / remove ─────────────────────────────────────────────────────
+cmd_add() {
+  inside_claude && die "run 'ccv add' in a terminal: it opens a browser login"
+  _name=""; _dir=""; _color=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir)   _dir=${2:-}; shift 2 || shift ;;
+      --color) _color=${2:-}; shift 2 || shift ;;
+      -*)      die "unknown option: $1" ;;
+      *)       _name=$1; shift ;;
+    esac
+  done
+  acc_valid_name "$_name" || die "usage: ccv add <name> [--dir DIR] [--color COLOR]  (name: letters, digits, - _)"
+  config_init
+  acc_exists "$_name" && die "account '$_name' already exists (log in again with: ccv login $_name)"
+
+  _dir=$(acc_expand "${_dir:-$HOME/.claude-$_name}")
+  case "$_dir" in /*) ;; *) _dir="$PWD/$_dir" ;; esac
+  case "$_dir" in *' '*) die "the config dir may not contain spaces: $_dir" ;; esac
+  if [ -e "$_dir" ] && [ ! -f "$_dir/$MARKER" ] && [ -n "$(ls -A "$_dir" 2>/dev/null)" ]; then
+    die "$(tilde "$_dir") exists and is not empty; choose another --dir"
+  fi
+  if [ -z "$_color" ]; then
+    # shellcheck disable=SC2086 # split the palette into lines
+    _color=$(printf '%s\n' $COLORS | sed -n "$(( ($(acc_count) - 1) % 7 + 1 ))p")
+  fi
+
+  if ! { mkdir -p "$_dir" && chmod 700 "$_dir" && : > "$_dir/$MARKER"; }; then
+    die "cannot create $_dir"
+  fi
+  config_append "account $_name $(tilde "$_dir") $_color"
+  link_account "$_name"
+  seed_json "$_name"
+  say "Account '$_name' ready at $(tilde "$_dir"); it shares everything with '$(acc_primary)' except the login."
+  say "Opening the login for '$_name'..."
+  run_claude_as "$_name" auth login || warn "login did not finish; retry with: ccv login $_name"
+  offer_shell_init
+  say ""
+  cmd_list
+}
+
+cmd_login() {
+  _n=$(acc_resolve "${1:-}") || die "usage: ccv login <name>"
+  run_claude_as "$_n" auth login
+}
+
+cmd_remove() {
+  _yes=0; _name=""
+  for _a in "$@"; do case "$_a" in --yes|-y) _yes=1 ;; *) _name=$_a ;; esac; done
+  _n=$(acc_resolve "$_name") || die "usage: ccv remove <name> [--yes]"
+  [ "$_n" = "$(acc_primary)" ] && die "'$_n' is the primary account and holds the shared content; it cannot be removed"
+  _d=$(acc_dir "$_n")
+  if [ "$_yes" != 1 ]; then
+    { [ -t 1 ] && [ -r /dev/tty ]; } || die "confirm with: ccv remove $_n --yes"
+    printf "Log out '%s' and delete %s? Shared content is not touched. [y/N] " "$_n" "$(tilde "$_d")"
+    read -r _ans < /dev/tty || _ans=""
+    case "$_ans" in y|Y|yes) ;; *) say "Cancelled."; return 0 ;; esac
+  fi
+  if [ -f "$_d/$MARKER" ]; then
+    run_claude_as "$_n" auth logout >/dev/null 2>&1 || warn "logout failed; the login may stay in the keychain"
+    # rm -rf does not follow the symlinks, so shared content is safe.
+    rm -rf "$_d"
+  else
+    warn "$(tilde "$_d") is not a ccv account directory; leaving it on disk"
+  fi
+  config_rewrite '{ line = $0; sub(/#.*/, "", line); split(line, f, " ") }
+    (f[1] == "account" && f[2] == n) || (f[1] == "default" && f[2] == n) { next }
+    f[1] == "route" { m = split(line, g, " "); if (g[m] == n) next }
+    { print }' -v n="$_n"
+  say "Removed account '$_n'."
+}
+
+# ── route / default / rename ─────────────────────────────────────────────────
+cmd_route() {
+  config_init
+  if [ "${1:-}" = "--remove" ]; then
+    [ $# -ge 2 ] || die "usage: ccv route --remove <folder>"
+    _f=$(acc_real "$2")
+    _drop=$(acc_lines route | while IFS= read -r _l; do
+      _lf=$(printf '%s' "$_l" | awk '{ $1 = ""; $NF = ""; sub(/^ +/, ""); sub(/ +$/, ""); print }')
+      [ "$(acc_real "$_lf")" = "$_f" ] && printf '%s\n' "$_lf"
+    done)
+    [ -n "$_drop" ] || die "no route for $(tilde "$_f")"
+    printf '%s\n' "$_drop" | while IFS= read -r _r; do _remove_route "$_r"; done
+    say "Route removed: $(tilde "$_f")"
+    return 0
+  fi
+  [ $# -eq 2 ] || die "usage: ccv route <folder> <name>   |   ccv route --remove <folder>"
+  _n=$(acc_resolve "$2") || die "unknown account: $2"
+  _f=$(acc_real "$1")
+  case "$_f" in /*) ;; *) _f="$PWD/$_f" ;; esac
+  _old=$(acc_lines route | while IFS= read -r _l; do
+    _lf=$(printf '%s' "$_l" | awk '{ $1 = ""; $NF = ""; sub(/^ +/, ""); sub(/ +$/, ""); print }')
+    [ "$(acc_real "$_lf")" = "$_f" ] && printf '%s\n' "$_lf"
+  done)
+  [ -n "$_old" ] && printf '%s\n' "$_old" | while IFS= read -r _r; do _remove_route "$_r"; done
+  config_append "route $(tilde "$_f") $_n"
+  say "$(tilde "$_f") -> $_n"
+}
+
+# _remove_route <folder text exactly as in the config>
+_remove_route() {
+  config_rewrite '{ line = $0; sub(/#.*/, "", line) }
+    line ~ /^[ \t]*route[ \t]/ { body = line; sub(/^[ \t]*route[ \t]+/, "", body); sub(/[ \t]+[^ \t]+[ \t]*$/, "", body)
+      if (body == r) next }
+    { print }' -v r="$1"
+}
+
+cmd_default() {
+  config_init
+  _n=$(acc_resolve "${1:-}") || die "usage: ccv default <name>"
+  config_rewrite '{ line = $0; sub(/#.*/, "", line); split(line, f, " ") } f[1] == "default" { next } { print }'
+  config_append "default $_n"
+  say "Default account: $_n"
+}
+
+cmd_rename() {
+  [ $# -eq 2 ] || die "usage: ccv rename <old> <new>"
+  _old=$(acc_resolve "$1") || die "unknown account: $1"
+  acc_valid_name "$2" || die "invalid name: $2"
+  acc_exists "$2" && die "account '$2' already exists"
+  config_rewrite '{ line = $0; sub(/#.*/, "", line); split(line, f, " ") }
+    (f[1] == "account" || f[1] == "default") && f[2] == o { $0 = line; $2 = nw; print; next }
+    f[1] == "route" { m = split(line, g, " "); if (g[m] == o) { $0 = line; $NF = nw; print; next } }
+    { print }' -v o="$_old" -v nw="$2"
+  say "Renamed '$_old' to '$2'."
+}
+
+# ── shell integration ────────────────────────────────────────────────────────
+cmd_shell_init() {
+  _q=$(printf '%s' "$CCV_SELF" | sed "s/'/'\\\\''/g")
+  cat <<EOF
+# cc-vitamins accounts: \`claude\` picks the account, \`ccv\` lists and switches.
+CCV_BIN='$_q'
+export CCV_BIN
+claude() { command "\$CCV_BIN" launch "\$@"; }
+ccv() {
+  if [ "\${1:-}" = use ] && [ -n "\${2:-}" ] && [ -z "\${CLAUDECODE:-}" ]; then
+    if [ "\$2" = auto ]; then unset CCV_ACCOUNT; echo "ccv: claude in this terminal follows routes again"; return 0; fi
+    CCV_ACCOUNT=\$(command "\$CCV_BIN" resolve "\$2") || return 1
+    export CCV_ACCOUNT
+    echo "ccv: claude in this terminal now uses \$CCV_ACCOUNT (undo: ccv use auto)"
+    return 0
+  fi
+  command "\$CCV_BIN" "\$@"
+}
+EOF
+}
+
+rc_file() {
+  case "${SHELL:-}" in
+    */bash) printf '%s/.bashrc' "$HOME" ;;
+    *)      printf '%s/.zshrc' "${ZDOTDIR:-$HOME}" ;;
+  esac
+}
+
+rc_has_block() { [ -f "$1" ] && grep -qF "$RC_BEGIN" "$1"; }
+
+install_shell_init() {
+  _rc=$(rc_file)
+  rc_has_block "$_rc" && { say "Shell integration already in $(tilde "$_rc")."; return 0; }
+  _q=$(printf '%s' "$CCV_SELF" | sed "s/'/'\\\\''/g")
+  printf '\n%s\n[ -x '\''%s'\'' ] && eval "$('\''%s'\'' shell-init)"\n%s\n' \
+    "$RC_BEGIN" "$_q" "$_q" "$RC_END" >> "$_rc" || die "cannot write $_rc"
+  say "Added the shell integration to $(tilde "$_rc")."
+  say ""
+  say "  ==> Now run:  exec \$SHELL     (or open a new terminal)"
+}
+
+offer_shell_init() {
+  rc_has_block "$(rc_file)" && return 0
+  # Ask only in an interactive terminal.
+  { [ -t 1 ] && [ -r /dev/tty ]; } || { say "Enable account routing and switching with: ccv shell-init --install"; return 0; }
+  printf "Add the 'claude'/'ccv' shell integration to %s? [Y/n] " "$(tilde "$(rc_file)")"
+  read -r _ans < /dev/tty || _ans=n
+  case "$_ans" in n|N|no) say "Skipped. Later: ccv shell-init --install" ;; *) install_shell_init ;; esac
+}
+
+# ── doctor ───────────────────────────────────────────────────────────────────
+cmd_doctor() {
+  _bad=0
+  say "config: $(tilde "$ACCOUNTS_FILE")"
+  acc_enabled || { say "  no accounts configured (ccv add <name>)"; return 0; }
+  _p=$(acc_primary); _pd=$(acc_dir "$_p")
+  say "claude: $(real_claude)"
+  for _n in $(acc_names); do
+    _d=$(acc_dir "$_n"); _login="not logged in"
+    acc_logged_in "$_n" && _login="logged in"
+    _plan=$(acc_plan "$_n")
+    say "account $_n: $(tilde "$_d") — $_login${_plan:+ ($_plan)}"
+    if [ "$_n" = "$_p" ]; then
+      [ -d "$_d" ] || { say "  ! primary dir missing"; _bad=1; }
+      continue
+    fi
+    [ -f "$_d/$MARKER" ] || { say "  ! not a ccv account dir (run: ccv add $_n)"; _bad=1; continue; }
+    _own=""; _missing=""
+    for _e in "$_pd"/* "$_pd"/.[!.]* "$_pd"/..?*; do
+      [ -e "$_e" ] || [ -L "$_e" ] || continue
+      _b=${_e##*/}
+      is_per_account "$_b" && continue
+      if [ -L "$_d/$_b" ]; then
+        [ "$(readlink "$_d/$_b")" = "$_pd/$_b" ] || _own="$_own $_b"
+      elif [ -e "$_d/$_b" ]; then _own="$_own $_b"
+      else _missing="$_missing $_b"; fi
+    done
+    [ -n "$_own" ] && { say "  ! not shared (a real file/dir, or a foreign link):$_own"; _bad=1; }
+    [ -n "$_missing" ] && say "  · not linked yet (linked on next launch):$_missing"
+    _aj=$(acc_json "$_n"); _pj=$(acc_json "$_p")
+    if [ -f "$_aj" ] && [ -f "$_pj" ]; then
+      _drift=$(jq -r -n --slurpfile a "$_aj" --slurpfile b "$_pj" \
+        '(($a[0].mcpServers // {}) | keys) as $x | (($b[0].mcpServers // {}) | keys) as $y | ($x - $y) + ($y - $x) | join(" ")')
+      [ -n "$_drift" ] && say "  · MCP servers differ (synced on next launch): $_drift"
+    fi
+  done
+  _over=$(auth_overrides)
+  [ -n "$_over" ] && { say "! $_over set: it overrides every account login"; _bad=1; }
+  if rc_has_block "$(rc_file)"; then say "shell integration: $(tilde "$(rc_file)")"
+  else say "shell integration: not installed (ccv shell-init --install)"; fi
+  [ "$_bad" = 0 ] && say "OK"
+  return "$_bad"
+}
+
+usage() {
+  cat <<'EOF'
+ccv — several Claude accounts, one Claude Code (part of cc-vitamins)
+
+  ccv                         list accounts (also: ccv accounts)
+  ccv use <name|#>            inside Claude (! ccv use 2): resume this session
+                              under that account; in a terminal: pin it here
+                              (ccv use auto to undo)
+  ccv add <name> [--dir D] [--color C]
+                              create an account and log in
+  ccv login <name>            log in again
+  ccv route <folder> <name>   default account for a folder (and below)
+  ccv route --remove <folder>
+  ccv default <name>          account for every other folder
+  ccv rename <old> <new>
+  ccv remove <name> [--yes]   log out and delete that account's directory
+  ccv doctor                  check links, logins and overrides
+  ccv shell-init [--install]  print (or add to your rc) the shell integration
+  claude --account <name> ... one-off launch with a specific account
+
+Config: ~/.config/cc-vitamins/accounts. Details: docs/ACCOUNTS.md
+EOF
+}
+
+_cmd=${1:-list}
+[ $# -gt 0 ] && shift
+case "$_cmd" in
+  list | ls | accounts) cmd_list ;;
+  use)        cmd_use "$@" ;;
+  add)        cmd_add "$@" ;;
+  login)      cmd_login "$@" ;;
+  remove | rm) cmd_remove "$@" ;;
+  route)      cmd_route "$@" ;;
+  default)    cmd_default "$@" ;;
+  rename)     cmd_rename "$@" ;;
+  doctor)     cmd_doctor ;;
+  launch)     cmd_launch "$@" ;;
+  resolve)    acc_resolve "${1:-}" || die "unknown account: ${1:-} (see: ccv)" ;;
+  shell-init) if [ "${1:-}" = "--install" ]; then install_shell_init; else cmd_shell_init; fi ;;
+  help | -h | --help) usage ;;
+  *)          die "unknown command: $_cmd (try: ccv help)" ;;
+esac

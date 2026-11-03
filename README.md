@@ -164,6 +164,7 @@ and the status line never waits for it.
 
 | Segment | Example | Notes |
 |---|---|---|
+| Account | `● personal Pro` | Which Claude login this session uses. Only with two or more [accounts](#several-claude-accounts). |
 | Vim mode | `[N]` / `[I]` | Only with vim mode on. |
 | Directory | `my-app` | Basename of the current directory. |
 | Git | `git:(main)*` | Branch; red `*` when the tree is dirty. |
@@ -189,6 +190,37 @@ and the status line never waits for it.
 
 Rows wrap between segments to fit the terminal width (Claude Code passes it in
 `COLUMNS`), so a segment is never cut in half on a narrow window.
+
+---
+
+## Several Claude accounts
+
+Have a company seat and a personal Pro/Max plan? `ccv` (installed with
+cc-vitamins) lets one Claude Code use several logins. Skills, plugins, MCP
+servers, settings, memory and sessions stay **the same**; only the account the
+requests go to changes.
+
+```sh
+~/.claude/cc-vitamins/bin/ccv add personal   # second login; offers the shell setup
+ccv rename default work                      # your existing login becomes "work"
+ccv route ~/code/acme work                   # this folder (and below) uses work
+ccv default personal                         # every other folder uses personal
+```
+
+Then `claude` picks the account by folder, `ccv` lists the accounts, and inside
+a running session
+
+```text
+! ccv use personal
+```
+
+restarts Claude under the other account and resumes the **same session**, for
+example when a usage limit runs out. The status line shows `● personal Pro`.
+Names and folders live only in your local `~/.config/cc-vitamins/accounts`.
+
+It is a restart plus resume, not a hot swap: a tool call or subagent running at
+that moment has to be continued. Design, limits and safety notes:
+[docs/ACCOUNTS.md](docs/ACCOUNTS.md).
 
 ---
 
