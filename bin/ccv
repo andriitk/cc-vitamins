@@ -108,7 +108,8 @@ EOF
 is_per_account() {
   case "$1" in
     .claude.json | .claude.json.* | .credentials.json | .credentials.json.* | \
-    remote-settings.json* | policy-limits.json* | backups | "$MARKER")
+    remote-settings.json* | policy-limits.json* | backups | "$MARKER" | \
+    .last-update-result.json | .cc-writes)
       return 0 ;;
   esac
   return 1
@@ -126,6 +127,33 @@ link_account() {
     _b=${_e##*/}
     is_per_account "$_b" && continue
     [ -e "$_d/$_b" ] || [ -L "$_d/$_b" ] || ln -s "$_p/$_b" "$_d/$_b"
+  done
+}
+
+# heal_account <name>  ->  restore links that Claude Code replaced with a regular
+# file (it saves some files by write-then-rename, which swaps a link for a copy).
+# Identical copy: relink. Newer copy: it becomes the shared file. Older copy:
+# the shared file wins. Every replaced copy is kept under $STATE_DIR/healed/.
+heal_account() {
+  _p=$(acc_dir "$(acc_primary)")
+  _d=$(acc_dir "$1")
+  [ "$_p" = "$_d" ] && return 0
+  for _e in "$_d"/* "$_d"/.[!.]* "$_d"/..?*; do
+    if [ -L "$_e" ] || [ ! -f "$_e" ]; then continue; fi
+    _b=${_e##*/}
+    is_per_account "$_b" && continue
+    [ -f "$_p/$_b" ] || continue
+    if ! cmp -s "$_e" "$_p/$_b"; then
+      _keep="$STATE_DIR/healed/$1-$(date +%Y%m%d-%H%M%S)"
+      mkdir -p "$_keep" && chmod 700 "$STATE_DIR" "$STATE_DIR/healed" "$_keep" 2>/dev/null
+      if [ "$_e" -nt "$_p/$_b" ]; then
+        if ! { cp -p "$_p/$_b" "$_keep/$_b.shared" && cat "$_e" > "$_p/$_b"; }; then continue; fi
+        warn "$_b: '$1' had a newer copy; it is shared again (old shared copy in $(tilde "$_keep"))"
+      else
+        cp -p "$_e" "$_keep/$_b.$1" || continue
+      fi
+    fi
+    rm -f "$_e" && ln -s "$_p/$_b" "$_e"
   done
 }
 
@@ -211,6 +239,7 @@ prepare_account() {
   if [ "$1" != "$(acc_primary)" ]; then
     _d=$(acc_dir "$1")
     [ -f "$_d/$MARKER" ] || die "account '$1' has no directory at $(tilde "$_d"); run: ccv add $1"
+    heal_account "$1"
     link_account "$1"
   fi
   sync_shared_json "$1" "$PWD"

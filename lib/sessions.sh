@@ -39,11 +39,13 @@ write_heartbeat() {
   resolve_owner_pid > "$1/$2" 2>/dev/null || :
 }
 
-# count_live_sessions <sessions_dir>  ->  number of heartbeats with a live PID
-# Dead heartbeats are removed as a side effect.
+# count_live_sessions <sessions_dir>  ->  number of distinct live Claude Code
+# processes. One process can leave several heartbeats (after /clear or /resume
+# its session ID changes), so PIDs are de-duplicated. Dead heartbeats are
+# removed as a side effect.
 count_live_sessions() {
   [ -d "$1" ] || { printf '0'; return 0; }
-  _count=0
+  _pids=""
   for _f in "$1"/*; do
     [ -f "$_f" ] || continue
     _p=$(cat "$_f" 2>/dev/null)
@@ -51,10 +53,11 @@ count_live_sessions() {
       '' | *[!0-9]* ) rm -f "$_f" 2>/dev/null; continue ;;
     esac
     if kill -0 "$_p" 2>/dev/null; then
-      _count=$(( _count + 1 ))
+      _pids="$_pids$_p
+"
     else
       rm -f "$_f" 2>/dev/null
     fi
   done
-  printf '%s' "$_count"
+  printf '%s' "$_pids" | sort -u | grep -c . || :
 }

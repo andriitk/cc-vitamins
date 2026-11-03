@@ -4,7 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - Unreleased
+## [0.3.1] - Unreleased
+
+### Fixed
+- `sessions` counted one Claude Code process twice after `/clear` or
+  `/resume` (its session ID changes); it now counts distinct live processes.
+- Running the installer from an extra `ccv` account replaced the shared
+  `settings.json` link with a private copy and asked about a "different"
+  status line that was the same file. It now edits the link target and
+  recognizes its own status line through any path.
+- `ccv` restores shared files that Claude Code saved as a private copy in an
+  extra account (write-then-rename): identical copies are relinked, a newer
+  copy becomes the shared file, replaced copies are kept under
+  `~/.local/state/cc-vitamins/healed/`. Claude's own bookkeeping files
+  (`.last-update-result.json`, `.cc-writes`) stay per account.
+
+## [0.3.0] - 2026-11-03
 
 ### Added
 - Several Claude accounts in one Claude Code (`ccv`). Every account shares
